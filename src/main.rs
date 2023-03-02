@@ -2,11 +2,17 @@ extern crate find_folder;
 extern crate opengl_graphics;
 extern crate piston_window;
 
+mod bounding_box;
+mod intersects;
+
+use bounding_box::BoundingBox;
 use glam::*;
+use intersects::ConvexPolygon;
 use opengl_graphics::{GlGraphics, OpenGL};
 use piston_window::*;
 use rand::{thread_rng, Rng};
 
+#[derive(Copy, Clone)]
 struct RectangleShape {
     width: f64,
     height: f64,
@@ -24,6 +30,15 @@ impl RectangleShape {
             colour,
         }
     }
+
+    fn corners(&self) -> [DVec2; 4] {
+        [
+            dvec2(-self.width / 2.0, -self.height / 2.0),
+            dvec2(self.width / 2.0, -self.height / 2.0),
+            dvec2(self.width / 2.0, self.height / 2.0),
+            dvec2(-self.width / 2.0, self.height / 2.0),
+        ]
+    }
 }
 
 struct RigidBody {
@@ -39,10 +54,11 @@ struct RigidBody {
     torque: f64,
 
     shape: RectangleShape,
+    fixed: bool,
 }
 
 impl RigidBody {
-    fn new(shape: RectangleShape, position: DVec2, angle: f64) -> RigidBody {
+    fn new(shape: RectangleShape, position: DVec2, angle: f64, fixed: bool) -> RigidBody {
         let mass = shape.width * shape.height * shape.density;
         let moment_of_inertia =
             mass * (shape.width * shape.width + shape.height * shape.height) / 12.0;
@@ -50,13 +66,40 @@ impl RigidBody {
             mass,
             moment_of_inertia,
             position,
-            velocity: dvec2(0.0, 0.0),
-            force: dvec2(0.0, 0.0),
+            velocity: DVec2::ZERO,
+            force: DVec2::ZERO,
             angle,
             angular_velocity: 0.0,
             torque: 0.0,
             shape,
+            fixed,
         }
+    }
+
+    fn corners(&self) -> ConvexPolygon {
+        let rotate_vector = dvec2(self.angle.cos(), self.angle.sin());
+        let vertices = self
+            .shape
+            .corners()
+            .map(|corner| self.position + corner.rotate(rotate_vector))
+            .to_vec();
+        ConvexPolygon { vertices }
+    }
+
+    fn bounding_box(&self) -> bounding_box::BoundingBox {
+        let corners = self.corners().vertices;
+        // TODO: Figure out how to do this with .iter().reduce()
+        let mut min = corners[0];
+        let mut max = corners[0];
+        for transformed_corner in &corners[1..] {
+            min = min.min(*transformed_corner);
+            max = max.max(*transformed_corner);
+        }
+        bounding_box::BoundingBox { min, max }
+    }
+    fn intersects(&self, other: &Self) -> bool {
+        self.bounding_box().intersects(&other.bounding_box())
+            && intersects::intersects(&self.corners(), &other.corners()).is_some()
     }
 }
 
@@ -67,26 +110,79 @@ struct Simulation {
 }
 
 impl Simulation {
-    fn compute_forces(&mut self, dt: f64) {
+    fn new(width: f64, height: f64, gl: GlGraphics) -> Self {
+        let shape = RectangleShape::new(width, height, 1000000.0, [0.5, 0.5, 0.5, 1.0]);
+        let top = RigidBody::new(shape, dvec2(width / 2.0, -height / 2.0), 0.0, true);
+        let bottom = RigidBody::new(shape, dvec2(width / 2.0, height * 1.5), 0.0, true);
+        let left = RigidBody::new(shape, dvec2(-width / 2.0, height / 2.0), 0.0, true);
+        let right = RigidBody::new(shape, dvec2(width * 1.5, height / 2.0), 0.0, true);
+        let objects = vec![top, bottom, left, right];
+        Simulation { objects, gl }
+    }
+
+    fn compute_forces(&mut self, _dt: f64) {
         for object in &mut self.objects {
             object.force = dvec2(0.0, 0.0);
-            object.force += dvec2(0.0, 50.0 * object.mass);
-
             object.torque = 0.0;
-            object.torque += object.moment_of_inertia;
+        }
+
+        // Apply gravity
+        for object in &mut self.objects {
+            object.force += dvec2(0.0, 50.0 * object.mass);
+            object.torque += object.moment_of_inertia * 0.1;
         }
     }
 
     fn update(&mut self, args: &UpdateArgs) {
         let dt = args.dt;
+        let num_steps = 4;
+        for _ in 0..num_steps {
+            self.step(dt / num_steps as f64);
+        }
+    }
+
+    fn resolve_collisions(&mut self) {
+        let n = self.objects.len();
+        for i in 0..n {
+            for j in i + 1..n {
+                if self.objects[i].fixed && self.objects[j].fixed {
+                    continue;
+                }
+                let object1 = &self.objects[i];
+                let object2 = &self.objects[j];
+                if let Some(direction) =
+                    intersects::intersection_direction(&object1.corners(), &object2.corners())
+                {
+                    let object1_move_factor = object2.mass / (object1.mass + object2.mass);
+                    let object2_move_factor = object1.mass / (object1.mass + object2.mass);
+
+                    if !self.objects[i].fixed {
+                        self.objects[i].position -= direction * object1_move_factor;
+                    }
+                    if !self.objects[j].fixed {
+                        self.objects[j].position += direction * object2_move_factor;
+                    }
+                }
+            }
+        }
+    }
+
+    fn step(&mut self, dt: f64) {
         self.compute_forces(dt);
+
         for object in &mut self.objects {
+            if object.fixed {
+                continue;
+            }
+
             object.velocity += object.force / object.mass * dt;
             object.position += object.velocity * dt;
 
             object.angular_velocity += object.torque / object.moment_of_inertia * dt;
             object.angle += object.angular_velocity * dt;
         }
+
+        self.resolve_collisions();
     }
 
     fn render(&mut self, args: &RenderArgs) {
@@ -103,9 +199,19 @@ impl Simulation {
                 let transform = context
                     .transform
                     .trans(x, y)
-                    .rot_deg(object.angle)
+                    .rot_rad(object.angle)
                     .scale(width, height);
                 rectangle(object.shape.colour, shape, transform, graphics);
+
+                // let bounding_box = object.bounding_box();
+                // let bounding_box_colour = [0.5, 0.5, 0.5, 0.3];
+                // rectangle_from_to(
+                //     bounding_box_colour,
+                //     bounding_box.min,
+                //     bounding_box.max,
+                //     context.transform,
+                //     graphics,
+                // );
             }
         });
     }
@@ -113,20 +219,25 @@ impl Simulation {
 
 fn main() {
     let opengl = OpenGL::V3_2;
-    let window: PistonWindow = WindowSettings::new("2D Rigid Body Simulation", [1024, 768])
+    let (width, height) = (1024, 768);
+    let window: PistonWindow = WindowSettings::new("2D Rigid Body Simulation", [width, height])
         .exit_on_esc(true)
         .graphics_api(opengl)
         .build()
         .unwrap();
 
-    let mut simulation = Simulation {
-        gl: GlGraphics::new(opengl),
-        objects: Vec::new(),
-    };
+    let mut simulation = Simulation::new(width as f64, height as f64, GlGraphics::new(opengl));
 
     let mut rng = thread_rng();
-    for _ in 0..12 {
-        let position = dvec2(rng.gen_range(0.0..1024.0), rng.gen_range(0.0..768.0));
+    let window_bounding_box = BoundingBox {
+        min: dvec2(0.0, 0.0),
+        max: dvec2(width as f64, height as f64),
+    };
+    for _ in 0..50 {
+        let position = dvec2(
+            rng.gen_range(0.0..width as f64),
+            rng.gen_range(0.0..height as f64),
+        );
         let angle = rng.gen_range(0.0..360.0);
         let colour: [f32; 4] = [
             rng.gen_range(0.5..1.0),
@@ -134,9 +245,18 @@ fn main() {
             rng.gen_range(0.5..1.0),
             1.0,
         ];
-        let shape = RectangleShape::new(60.0, 60.0, 1.0, colour);
-        let rectangle = RigidBody::new(shape, position, angle);
-        simulation.objects.push(rectangle);
+        let size = rng.gen_range(50.0..100.0);
+        let shape = RectangleShape::new(size, size, 1.0, colour);
+        let rectangle = RigidBody::new(shape, position, angle, false);
+
+        let intersects_existing = simulation
+            .objects
+            .iter()
+            .any(|object| rectangle.intersects(object));
+        let completely_contained = window_bounding_box.contains(&rectangle.bounding_box());
+        if completely_contained && !intersects_existing {
+            simulation.objects.push(rectangle);
+        }
     }
 
     for event in window {
