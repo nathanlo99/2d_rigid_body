@@ -81,6 +81,7 @@ pub fn intersection_direction<T1: Support, T2: Support>(poly1: &T1, poly2: &T2) 
     let mut points: Vec<DVec2> = [p1, p2, p3].to_vec();
     loop {
         let num_points = points.len();
+
         // 1. Find the edge closest to the origin
         let mut closest_idx = 0;
         let mut closest_distance = f64::INFINITY;
@@ -90,7 +91,7 @@ pub fn intersection_direction<T1: Support, T2: Support>(poly1: &T1, poly2: &T2) 
             let normal = -segment_normal_towards_origin(points[i], points[j]).normalize_or_zero();
             let distance = normal.dot(points[i]);
             if distance < closest_distance {
-                closest_idx = i;
+                closest_idx = j;
                 closest_distance = distance;
                 closest_normal = normal;
             }
@@ -99,10 +100,10 @@ pub fn intersection_direction<T1: Support, T2: Support>(poly1: &T1, poly2: &T2) 
         // 2. Try and expand it
         let new_point = poly1.support_point(closest_normal) - poly2.support_point(-closest_normal);
         let new_distance = new_point.dot(closest_normal);
-        if new_distance - closest_distance < 0.1 {
+        if new_distance - closest_distance < 0.0001 {
             return Some(closest_normal * new_distance);
         }
 
-        points.insert((closest_idx + 1) % num_points, new_point);
+        points.insert(closest_idx % num_points, new_point);
     }
 }

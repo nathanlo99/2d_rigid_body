@@ -7,7 +7,7 @@ mod intersects;
 
 use bounding_box::BoundingBox;
 use glam::*;
-use intersects::ConvexPolygon;
+use intersects::{ConvexPolygon, Support};
 use opengl_graphics::{GlGraphics, OpenGL};
 use piston_window::*;
 use rand::{thread_rng, Rng};
@@ -76,6 +76,10 @@ impl RigidBody {
         }
     }
 
+    fn center(&self) -> DVec2 {
+        self.position
+    }
+
     fn corners(&self) -> ConvexPolygon {
         let rotate_vector = dvec2(self.angle.cos(), self.angle.sin());
         let vertices = self
@@ -97,9 +101,23 @@ impl RigidBody {
         }
         bounding_box::BoundingBox { min, max }
     }
+
     fn intersects(&self, other: &Self) -> bool {
         self.bounding_box().intersects(&other.bounding_box())
             && intersects::intersects(&self.corners(), &other.corners()).is_some()
+    }
+
+    fn preupdate(&mut self) {
+        self.force = DVec2::ZERO;
+        self.torque = 0.0;
+    }
+
+    fn apply_force(&mut self, point: DVec2, direction: DVec2) {
+        self.force += direction;
+        let r = point - self.center();
+        self.torque += dvec3(r.x, r.y, 0.0)
+            .cross(dvec3(direction.x, direction.y, 0.0))
+            .z;
     }
 }
 
@@ -121,21 +139,17 @@ impl Simulation {
     }
 
     fn compute_forces(&mut self, _dt: f64) {
-        for object in &mut self.objects {
-            object.force = dvec2(0.0, 0.0);
-            object.torque = 0.0;
-        }
+        self.objects.iter_mut().for_each(RigidBody::preupdate);
 
         // Apply gravity
-        for object in &mut self.objects {
-            object.force += dvec2(0.0, 50.0 * object.mass);
-            object.torque += object.moment_of_inertia * 0.1;
-        }
+        self.objects.iter_mut().for_each(|object| {
+            object.apply_force(object.center(), 500.0 * object.mass * DVec2::Y);
+        });
     }
 
     fn update(&mut self, args: &UpdateArgs) {
         let dt = args.dt;
-        let num_steps = 4;
+        let num_steps = 16;
         for _ in 0..num_steps {
             self.step(dt / num_steps as f64);
         }
@@ -150,17 +164,25 @@ impl Simulation {
                 }
                 let object1 = &self.objects[i];
                 let object2 = &self.objects[j];
+
+                let object1_corners = object1.corners();
+                let object2_corners = object2.corners();
                 if let Some(direction) =
-                    intersects::intersection_direction(&object1.corners(), &object2.corners())
+                    intersects::intersection_direction(&object1_corners, &object2_corners)
                 {
                     let object1_move_factor = object2.mass / (object1.mass + object2.mass);
                     let object2_move_factor = object1.mass / (object1.mass + object2.mass);
 
+                    let contact_point = object2_corners.support_point(-direction);
+                    let torque_scale_factor = 1000000.0;
                     if !self.objects[i].fixed {
                         self.objects[i].position -= direction * object1_move_factor;
+                        self.objects[i]
+                            .apply_force(contact_point, -direction * torque_scale_factor);
                     }
                     if !self.objects[j].fixed {
                         self.objects[j].position += direction * object2_move_factor;
+                        self.objects[j].apply_force(contact_point, direction * torque_scale_factor);
                     }
                 }
             }
@@ -169,6 +191,7 @@ impl Simulation {
 
     fn step(&mut self, dt: f64) {
         self.compute_forces(dt);
+        self.resolve_collisions();
 
         for object in &mut self.objects {
             if object.fixed {
@@ -181,8 +204,6 @@ impl Simulation {
             object.angular_velocity += object.torque / object.moment_of_inertia * dt;
             object.angle += object.angular_velocity * dt;
         }
-
-        self.resolve_collisions();
     }
 
     fn render(&mut self, args: &RenderArgs) {
@@ -233,20 +254,21 @@ fn main() {
         min: dvec2(0.0, 0.0),
         max: dvec2(width as f64, height as f64),
     };
-    for _ in 0..50 {
+    for _ in 0..10 {
         let position = dvec2(
             rng.gen_range(0.0..width as f64),
             rng.gen_range(0.0..height as f64),
         );
         let angle = rng.gen_range(0.0..360.0);
         let colour: [f32; 4] = [
-            rng.gen_range(0.5..1.0),
-            rng.gen_range(0.5..1.0),
-            rng.gen_range(0.5..1.0),
+            rng.gen_range(0.5..0.9),
+            rng.gen_range(0.5..0.9),
+            rng.gen_range(0.5..0.9),
             1.0,
         ];
-        let size = rng.gen_range(50.0..100.0);
-        let shape = RectangleShape::new(size, size, 1.0, colour);
+        let width = rng.gen_range(50.0..100.0);
+        let height = rng.gen_range(50.0..100.0);
+        let shape = RectangleShape::new(width, height, 1.0, colour);
         let rectangle = RigidBody::new(shape, position, angle, false);
 
         let intersects_existing = simulation
