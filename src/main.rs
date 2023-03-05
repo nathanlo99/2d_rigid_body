@@ -107,17 +107,9 @@ impl RigidBody {
             && intersects::intersects(&self.corners(), &other.corners()).is_some()
     }
 
-    fn preupdate(&mut self) {
+    fn clear_forces(&mut self) {
         self.force = DVec2::ZERO;
         self.torque = 0.0;
-    }
-
-    fn apply_force(&mut self, point: DVec2, direction: DVec2) {
-        self.force += direction;
-        let r = point - self.center();
-        self.torque += dvec3(r.x, r.y, 0.0)
-            .cross(dvec3(direction.x, direction.y, 0.0))
-            .z;
     }
 }
 
@@ -139,11 +131,11 @@ impl Simulation {
     }
 
     fn compute_forces(&mut self, _dt: f64) {
-        self.objects.iter_mut().for_each(RigidBody::preupdate);
+        self.objects.iter_mut().for_each(RigidBody::clear_forces);
 
         // Apply gravity
         self.objects.iter_mut().for_each(|object| {
-            object.apply_force(object.center(), 500.0 * object.mass * DVec2::Y);
+            object.force += 500.0 * object.mass * DVec2::Y;
         });
     }
 
@@ -155,43 +147,75 @@ impl Simulation {
         }
     }
 
-    fn resolve_collisions(&mut self) {
+    fn colliding_objects(&self) -> Vec<(usize, usize, DVec2)> {
+        let mut result = Vec::new();
         let n = self.objects.len();
         for i in 0..n {
             for j in i + 1..n {
-                if self.objects[i].fixed && self.objects[j].fixed {
-                    continue;
-                }
                 let object1 = &self.objects[i];
                 let object2 = &self.objects[j];
 
+                if self.objects[i].fixed && self.objects[j].fixed {
+                    continue;
+                }
                 let object1_corners = object1.corners();
                 let object2_corners = object2.corners();
                 if let Some(direction) =
                     intersects::intersection_direction(&object1_corners, &object2_corners)
                 {
-                    let object1_move_factor = object2.mass / (object1.mass + object2.mass);
-                    let object2_move_factor = object1.mass / (object1.mass + object2.mass);
-
-                    let contact_point = object2_corners.support_point(-direction);
-                    let torque_scale_factor = 1000000.0;
-                    if !self.objects[i].fixed {
-                        self.objects[i].position -= direction * object1_move_factor;
-                        self.objects[i]
-                            .apply_force(contact_point, -direction * torque_scale_factor);
-                    }
-                    if !self.objects[j].fixed {
-                        self.objects[j].position += direction * object2_move_factor;
-                        self.objects[j].apply_force(contact_point, direction * torque_scale_factor);
+                    if direction.length() > 0.0001 {
+                        result.push((i, j, direction));
                     }
                 }
+            }
+        }
+        result
+    }
+
+    fn resolve_collisions(&mut self) {
+        for (i, j, direction) in self.colliding_objects() {
+            let object1 = &self.objects[i];
+            let object2 = &self.objects[j];
+
+            let object1_move_factor = if object2.fixed {
+                1.0
+            } else {
+                object2.mass / (object1.mass + object2.mass)
+            };
+            let object2_move_factor = if object1.fixed {
+                1.0
+            } else {
+                object1.mass / (object1.mass + object2.mass)
+            };
+
+            let n = -direction;
+            // let contact_point = object2.corners().support_point(-direction);
+
+            let inv_mass1 = 1.0 / self.objects[i].mass;
+            let inv_mass2 = 1.0 / self.objects[j].mass;
+            let velocity1 = self.objects[i].velocity;
+            let velocity2 = self.objects[j].velocity;
+            let epsilon = 0.999;
+
+            let num = -(1.0 + epsilon) * (velocity2 - velocity1).dot(n);
+            let denom = n.length_squared() * (inv_mass1 + inv_mass2);
+            let impulse = num / denom; // TODO add angular contribution
+            let impulse = if impulse.is_nan() { 0.0 } else { impulse };
+            // println!("i: {i}, j: {j}, inv_mass1: {inv_mass1}, inv_mass2: {inv_mass2}, num: {num}, denom: {denom}, impulse: {impulse}");
+            if !self.objects[i].fixed {
+                self.objects[i].position -= direction * object1_move_factor;
+                self.objects[i].velocity -= impulse * inv_mass1 * n;
+            }
+
+            if !self.objects[j].fixed {
+                self.objects[j].position += direction * object2_move_factor;
+                self.objects[j].velocity += impulse * inv_mass2 * n;
             }
         }
     }
 
     fn step(&mut self, dt: f64) {
         self.compute_forces(dt);
-        self.resolve_collisions();
 
         for object in &mut self.objects {
             if object.fixed {
@@ -204,6 +228,7 @@ impl Simulation {
             object.angular_velocity += object.torque / object.moment_of_inertia * dt;
             object.angle += object.angular_velocity * dt;
         }
+        self.resolve_collisions();
     }
 
     fn render(&mut self, args: &RenderArgs) {
@@ -223,16 +248,6 @@ impl Simulation {
                     .rot_rad(object.angle)
                     .scale(width, height);
                 rectangle(object.shape.colour, shape, transform, graphics);
-
-                // let bounding_box = object.bounding_box();
-                // let bounding_box_colour = [0.5, 0.5, 0.5, 0.3];
-                // rectangle_from_to(
-                //     bounding_box_colour,
-                //     bounding_box.min,
-                //     bounding_box.max,
-                //     context.transform,
-                //     graphics,
-                // );
             }
         });
     }
@@ -249,17 +264,20 @@ fn main() {
 
     let mut simulation = Simulation::new(width as f64, height as f64, GlGraphics::new(opengl));
 
-    let mut rng = thread_rng();
     let window_bounding_box = BoundingBox {
         min: dvec2(0.0, 0.0),
         max: dvec2(width as f64, height as f64),
     };
-    for _ in 0..10 {
+    let mut rng = thread_rng();
+
+    let num_boxes = 25;
+    while simulation.objects.len() < 4 + num_boxes {
         let position = dvec2(
             rng.gen_range(0.0..width as f64),
             rng.gen_range(0.0..height as f64),
         );
         let angle = rng.gen_range(0.0..360.0);
+
         let colour: [f32; 4] = [
             rng.gen_range(0.5..0.9),
             rng.gen_range(0.5..0.9),
