@@ -189,27 +189,46 @@ impl Simulation {
             };
 
             let n = -direction;
-            // let contact_point = object2.corners().support_point(-direction);
+            let contact_point = object2.corners().support_point(-direction);
 
             let inv_mass1 = 1.0 / self.objects[i].mass;
             let inv_mass2 = 1.0 / self.objects[j].mass;
             let velocity1 = self.objects[i].velocity;
             let velocity2 = self.objects[j].velocity;
-            let epsilon = 0.999;
+
+            let rap = contact_point - self.objects[i].center();
+            let rap_perp = rap.rotate(dvec2(0.0, 1.0));
+            let rap_perp_dot_n = rap_perp.dot(n);
+
+            let rbp = contact_point - self.objects[j].center();
+            let rbp_perp = rbp.rotate(dvec2(0.0, 1.0));
+            let rbp_perp_dot_n = rbp_perp.dot(n);
+            let epsilon = 0.20;
 
             let num = -(1.0 + epsilon) * (velocity2 - velocity1).dot(n);
             let denom = n.length_squared() * (inv_mass1 + inv_mass2);
-            let impulse = num / denom; // TODO add angular contribution
+
+            let angular_contribution1 =
+                rap_perp_dot_n * rap_perp_dot_n / self.objects[i].moment_of_inertia;
+            let angular_contribution2 =
+                rbp_perp_dot_n * rbp_perp_dot_n / self.objects[j].moment_of_inertia;
+            let denom = denom + angular_contribution1 + angular_contribution2;
+
+            let impulse = num / denom;
             let impulse = if impulse.is_nan() { 0.0 } else { impulse };
             // println!("i: {i}, j: {j}, inv_mass1: {inv_mass1}, inv_mass2: {inv_mass2}, num: {num}, denom: {denom}, impulse: {impulse}");
             if !self.objects[i].fixed {
                 self.objects[i].position -= direction * object1_move_factor;
                 self.objects[i].velocity -= impulse * inv_mass1 * n;
+                self.objects[i].angular_velocity -=
+                    rap_perp.dot(n) * impulse / self.objects[i].moment_of_inertia;
             }
 
             if !self.objects[j].fixed {
                 self.objects[j].position += direction * object2_move_factor;
                 self.objects[j].velocity += impulse * inv_mass2 * n;
+                self.objects[j].angular_velocity +=
+                    rbp_perp.dot(n) * impulse / self.objects[j].moment_of_inertia;
             }
         }
     }
