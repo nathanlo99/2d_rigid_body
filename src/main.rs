@@ -177,21 +177,22 @@ impl Simulation {
             let object1 = &self.objects[i];
             let object2 = &self.objects[j];
 
-            let object1_move_factor = 1.0 / (1.0 + object2.inv_mass / object1.inv_mass);
-            let object2_move_factor = 1.0 / (1.0 + object1.inv_mass / object2.inv_mass);
-
             let inv_mass1 = object1.inv_mass;
             let inv_mass2 = object2.inv_mass;
-            let velocity1 = object1.velocity;
-            let velocity2 = object2.velocity;
+            let velocity1 = self.objects[i].velocity;
+            let velocity2 = self.objects[j].velocity;
             let inv_moment_of_inertia1 = object1.inv_moment_of_inertia;
             let inv_moment_of_inertia2 = object2.inv_moment_of_inertia;
+
+            let object1_move_factor = 1.0 / (1.0 + object2.inv_mass / object1.inv_mass);
+            let object2_move_factor = 1.0 - object1_move_factor;
 
             self.objects[i].position -= direction * object1_move_factor;
             self.objects[j].position += direction * object2_move_factor;
 
-            let n = -direction.normalize();
-            let contact_point = self.objects[j].corners().support_point(n);
+            let n = -direction;
+            let contact_point =
+                intersects::contact_point(self.objects[i].corners(), self.objects[j].corners()); // self.objects[j].corners().support_point(n);
 
             let rap = contact_point - self.objects[i].center();
             let rap_perp = rap.rotate(dvec2(0.0, 1.0));
@@ -200,7 +201,7 @@ impl Simulation {
             let rbp = contact_point - self.objects[j].center();
             let rbp_perp = rbp.rotate(dvec2(0.0, 1.0));
             let rbp_perp_dot_n = rbp_perp.dot(n);
-            let epsilon = 0.00;
+            let epsilon = 0.5;
 
             let angular_contribution1 = rap_perp_dot_n * rap_perp_dot_n * inv_moment_of_inertia1;
             let angular_contribution2 = rbp_perp_dot_n * rbp_perp_dot_n * inv_moment_of_inertia2;

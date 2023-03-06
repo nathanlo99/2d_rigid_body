@@ -107,3 +107,48 @@ pub fn intersection_direction<T1: Support, T2: Support>(poly1: &T1, poly2: &T2) 
         points.insert(closest_idx % num_points, new_point);
     }
 }
+
+// Under the assumption that the polygons are colliding with vertex-edge, find the contact point
+pub fn contact_point(poly1: ConvexPolygon, poly2: ConvexPolygon) -> DVec2 {
+    let mut closest_point: DVec2 = poly2.vertices[0];
+    let mut closest_distance = f64::INFINITY;
+
+    let vertices1 = poly1.vertices;
+    let vertices2 = poly2.vertices;
+
+    let n = vertices1.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let normal = (vertices1[j] - vertices1[i])
+            .rotate(dvec2(0.0, -1.0))
+            .normalize_or_zero();
+
+        for point in &vertices2 {
+            let this_distance = (*point - vertices1[i]).dot(normal).abs();
+            if this_distance < closest_distance {
+                closest_point = *point;
+                closest_distance = this_distance;
+            }
+        }
+    }
+
+    let n = vertices2.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let normal = (vertices2[j] - vertices2[i])
+            .rotate(dvec2(0.0, -1.0))
+            .normalize_or_zero();
+
+        for point in &vertices1 {
+            let this_distance = (*point - vertices2[i]).dot(normal).abs();
+            if this_distance < closest_distance {
+                closest_point = *point;
+                closest_distance = this_distance;
+            }
+        }
+    }
+
+    println!("Closest distance: {closest_distance}");
+
+    closest_point
+}
