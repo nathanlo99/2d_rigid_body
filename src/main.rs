@@ -7,7 +7,7 @@ mod intersects;
 
 use bounding_box::BoundingBox;
 use glam::*;
-use intersects::{ConvexPolygon, Support};
+use intersects::ConvexPolygon;
 use opengl_graphics::{GlGraphics, GlyphCache, OpenGL};
 use piston_window::*;
 use rand::{thread_rng, Rng};
@@ -130,6 +130,19 @@ impl Simulation {
         Simulation { objects, gl }
     }
 
+    fn energy(&self) -> f64 {
+        self.objects
+            .iter()
+            .filter(|object| !object.fixed)
+            .map(|object| {
+                let linear_energy = 0.5 * object.velocity.length_squared() / object.inv_mass;
+                let angular_energy = 0.5 * object.angular_velocity * object.angular_velocity
+                    / object.inv_moment_of_inertia;
+                linear_energy + angular_energy
+            })
+            .sum()
+    }
+
     fn compute_forces(&mut self, _dt: f64) {
         self.objects.iter_mut().for_each(RigidBody::clear_forces);
 
@@ -192,7 +205,7 @@ impl Simulation {
 
             let n = -direction;
             let contact_point =
-                intersects::contact_point(self.objects[i].corners(), self.objects[j].corners()); // self.objects[j].corners().support_point(n);
+                intersects::contact_point(&self.objects[i].corners(), &self.objects[j].corners());
 
             let rap = contact_point - self.objects[i].center();
             let rap_perp = rap.rotate(dvec2(0.0, 1.0));
@@ -201,7 +214,7 @@ impl Simulation {
             let rbp = contact_point - self.objects[j].center();
             let rbp_perp = rbp.rotate(dvec2(0.0, 1.0));
             let rbp_perp_dot_n = rbp_perp.dot(n);
-            let epsilon = 0.5;
+            let epsilon = 1.0;
 
             let angular_contribution1 = rap_perp_dot_n * rap_perp_dot_n * inv_moment_of_inertia1;
             let angular_contribution2 = rbp_perp_dot_n * rbp_perp_dot_n * inv_moment_of_inertia2;
@@ -247,6 +260,8 @@ impl Simulation {
     fn render(&mut self, args: &RenderArgs) {
         let mut glyphs = GlyphCache::new("assets/FiraSans-Regular.ttf", (), TextureSettings::new())
             .expect("Could not load font");
+        let energy = self.energy();
+
         self.gl.draw(args.viewport(), |context, graphics| {
             clear([1.0; 4], graphics);
 
@@ -276,6 +291,17 @@ impl Simulation {
                 )
                 .expect("Could not print");
             }
+
+            let transform = context.transform.trans(5.0, 25.0);
+            text(
+                [0.0, 0.0, 0.0, 1.0],
+                20,
+                format!("Energy: {energy:13.2}").as_str(),
+                &mut glyphs,
+                transform,
+                graphics,
+            )
+            .expect("Could not print");
         });
     }
 }

@@ -1,5 +1,4 @@
 use glam::*;
-
 pub trait Support {
     fn support_point(&self, direction: DVec2) -> DVec2;
 }
@@ -108,47 +107,48 @@ pub fn intersection_direction<T1: Support, T2: Support>(poly1: &T1, poly2: &T2) 
     }
 }
 
+pub fn distance_to_line(p: DVec2, p1: DVec2, p2: DVec2) -> f64 {
+    let l2 = (p1 - p2).length_squared();
+    if l2 == 0.0 {
+        return (p - p1).length();
+    }
+    let t = ((p - p1).dot(p2 - p1) / l2).clamp(0.0, 1.0);
+    let projection = p1 + t * (p2 - p1); // Projection falls on the segment
+    (p - projection).length()
+}
+
+pub fn distance_to_polygon(p: DVec2, poly: &ConvexPolygon) -> f64 {
+    let vertices = &poly.vertices;
+    let n = vertices.len();
+
+    let mut result = f64::INFINITY;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        result = result.min(distance_to_line(p, vertices[i], vertices[j]));
+    }
+    result
+}
+
 // Under the assumption that the polygons are colliding with vertex-edge, find the contact point
-pub fn contact_point(poly1: ConvexPolygon, poly2: ConvexPolygon) -> DVec2 {
+pub fn contact_point(poly1: &ConvexPolygon, poly2: &ConvexPolygon) -> DVec2 {
     let mut closest_point: DVec2 = poly2.vertices[0];
     let mut closest_distance = f64::INFINITY;
 
-    let vertices1 = poly1.vertices;
-    let vertices2 = poly2.vertices;
-
-    let n = vertices1.len();
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let normal = (vertices1[j] - vertices1[i])
-            .rotate(dvec2(0.0, -1.0))
-            .normalize_or_zero();
-
-        for point in &vertices2 {
-            let this_distance = (*point - vertices1[i]).dot(normal).abs();
-            if this_distance < closest_distance {
-                closest_point = *point;
-                closest_distance = this_distance;
-            }
+    for pt in &poly1.vertices {
+        let distance = distance_to_polygon(*pt, poly2);
+        if distance < closest_distance {
+            (closest_point, closest_distance) = (*pt, distance);
+        }
+    }
+    for pt in &poly2.vertices {
+        let distance = distance_to_polygon(*pt, poly1);
+        if distance < closest_distance {
+            (closest_point, closest_distance) = (*pt, distance);
         }
     }
 
-    let n = vertices2.len();
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let normal = (vertices2[j] - vertices2[i])
-            .rotate(dvec2(0.0, -1.0))
-            .normalize_or_zero();
-
-        for point in &vertices1 {
-            let this_distance = (*point - vertices2[i]).dot(normal).abs();
-            if this_distance < closest_distance {
-                closest_point = *point;
-                closest_distance = this_distance;
-            }
-        }
+    if closest_distance > 1.0 {
+        println!("Closest distance: {closest_distance}");
     }
-
-    println!("Closest distance: {closest_distance}");
-
     closest_point
 }
