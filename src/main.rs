@@ -8,7 +8,7 @@ mod intersects;
 use bounding_box::BoundingBox;
 use glam::*;
 use intersects::{ConvexPolygon, Support};
-use opengl_graphics::{GlGraphics, OpenGL};
+use opengl_graphics::{GlGraphics, GlyphCache, OpenGL};
 use piston_window::*;
 use rand::{thread_rng, Rng};
 
@@ -244,10 +244,12 @@ impl Simulation {
     }
 
     fn render(&mut self, args: &RenderArgs) {
+        let mut glyphs = GlyphCache::new("assets/FiraSans-Regular.ttf", (), TextureSettings::new())
+            .expect("Could not load font");
         self.gl.draw(args.viewport(), |context, graphics| {
             clear([1.0; 4], graphics);
 
-            for object in &self.objects {
+            for (idx, object) in self.objects.iter().enumerate() {
                 let width = object.shape.width;
                 let height = object.shape.height;
                 let x = object.position.x;
@@ -260,6 +262,18 @@ impl Simulation {
                     .rot_rad(object.angle)
                     .scale(width, height);
                 rectangle(object.shape.colour, shape, transform, graphics);
+
+                let transform = context.transform.trans(x - 5.0, y + 5.0);
+
+                text(
+                    [0.0, 0.0, 0.0, 1.0],
+                    20,
+                    format!("{idx}").as_str(),
+                    &mut glyphs,
+                    transform,
+                    graphics,
+                )
+                .expect("Could not print");
             }
         });
     }
@@ -282,7 +296,7 @@ fn main() {
     };
     let mut rng = thread_rng();
 
-    let num_boxes = 10;
+    let num_boxes = 25;
     while simulation.objects.len() < 4 + num_boxes {
         let position = dvec2(
             rng.gen_range(0.0..width as f64),
