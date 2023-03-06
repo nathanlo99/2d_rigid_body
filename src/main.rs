@@ -63,7 +63,7 @@ impl RigidBody {
         let moment_of_inertia =
             mass * (shape.width * shape.width + shape.height * shape.height) / 12.0;
         RigidBody {
-            inv_mass: 1.0 / mass,
+            inv_mass: if fixed { 0.0 } else { 1.0 / mass },
             inv_moment_of_inertia: 1.0 / moment_of_inertia,
             position,
             velocity: DVec2::ZERO,
@@ -177,31 +177,21 @@ impl Simulation {
             let object1 = &self.objects[i];
             let object2 = &self.objects[j];
 
-            let object1_move_factor = if object2.fixed {
-                1.0
-            } else {
-                1.0 / (1.0 + object2.inv_mass / object1.inv_mass)
-            };
-            let object2_move_factor = if object1.fixed {
-                1.0
-            } else {
-                1.0 / (1.0 + object1.inv_mass / object2.inv_mass)
-            };
+            let object1_move_factor = 1.0 / (1.0 + object2.inv_mass / object1.inv_mass);
+            let object2_move_factor = 1.0 / (1.0 + object1.inv_mass / object2.inv_mass);
 
-            if !self.objects[i].fixed {
-                self.objects[i].position -= direction * object1_move_factor;
-            }
-            if !self.objects[j].fixed {
-                self.objects[j].position += direction * object2_move_factor;
-            }
+            let inv_mass1 = object1.inv_mass;
+            let inv_mass2 = object2.inv_mass;
+            let velocity1 = object1.velocity;
+            let velocity2 = object2.velocity;
+            let inv_moment_of_inertia1 = object1.inv_moment_of_inertia;
+            let inv_moment_of_inertia2 = object2.inv_moment_of_inertia;
+
+            self.objects[i].position -= direction * object1_move_factor;
+            self.objects[j].position += direction * object2_move_factor;
 
             let n = -direction.normalize();
             let contact_point = self.objects[j].corners().support_point(n);
-
-            let inv_mass1 = self.objects[i].inv_mass;
-            let inv_mass2 = self.objects[j].inv_mass;
-            let velocity1 = self.objects[i].velocity;
-            let velocity2 = self.objects[j].velocity;
 
             let rap = contact_point - self.objects[i].center();
             let rap_perp = rap.rotate(dvec2(0.0, 1.0));
@@ -210,12 +200,10 @@ impl Simulation {
             let rbp = contact_point - self.objects[j].center();
             let rbp_perp = rbp.rotate(dvec2(0.0, 1.0));
             let rbp_perp_dot_n = rbp_perp.dot(n);
-            let epsilon = 0.20;
+            let epsilon = 0.00;
 
-            let angular_contribution1 =
-                rap_perp_dot_n * rap_perp_dot_n * self.objects[i].inv_moment_of_inertia;
-            let angular_contribution2 =
-                rbp_perp_dot_n * rbp_perp_dot_n * self.objects[j].inv_moment_of_inertia;
+            let angular_contribution1 = rap_perp_dot_n * rap_perp_dot_n * inv_moment_of_inertia1;
+            let angular_contribution2 = rbp_perp_dot_n * rbp_perp_dot_n * inv_moment_of_inertia2;
 
             let num = -(1.0 + epsilon) * (velocity2 - velocity1).dot(n);
             let denom = n.length_squared() * (inv_mass1 + inv_mass2)
@@ -294,7 +282,7 @@ fn main() {
     };
     let mut rng = thread_rng();
 
-    let num_boxes = 1;
+    let num_boxes = 10;
     while simulation.objects.len() < 4 + num_boxes {
         let position = dvec2(
             rng.gen_range(0.0..width as f64),
