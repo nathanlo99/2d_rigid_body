@@ -11,6 +11,8 @@ use intersects::ConvexPolygon;
 use opengl_graphics::{GlGraphics, GlyphCache, OpenGL};
 use piston_window::*;
 use rand::{thread_rng, Rng};
+use std::cmp::Ordering;
+use std::collections::HashSet;
 
 #[derive(Copy, Clone)]
 struct RectangleShape {
@@ -162,25 +164,45 @@ impl Simulation {
 
     fn colliding_objects(&self) -> Vec<(usize, usize, DVec2)> {
         let mut result = Vec::new();
-        let n = self.objects.len();
-        for i in 0..n {
-            for j in i + 1..n {
-                let object1 = &self.objects[i];
-                let object2 = &self.objects[j];
 
-                if self.objects[i].fixed && self.objects[j].fixed {
-                    continue;
-                }
-                let object1_corners = object1.corners();
-                let object2_corners = object2.corners();
+        let bounding_boxes = self.objects.iter().map(RigidBody::bounding_box);
+        let corners: Vec<ConvexPolygon> = self.objects.iter().map(RigidBody::corners).collect();
+
+        let mut x_coordinates: Vec<(f64, bool, usize)> = bounding_boxes
+            .into_iter()
+            .enumerate()
+            .flat_map(|(idx, bounding_box)| {
+                let start_x = bounding_box.min.x;
+                let end_x = bounding_box.max.x;
+                [(start_x, false, idx), (end_x, true, idx)]
+            })
+            .collect();
+
+        x_coordinates.sort_unstable_by(|(x1, is_end1, idx1), (x2, is_end2, idx2)| -> Ordering {
+            match x1.partial_cmp(x2).unwrap() {
+                Ordering::Equal => Ord::cmp(&(is_end1, idx1), &(is_end2, idx2)),
+                Ordering::Greater => Ordering::Greater,
+                Ordering::Less => Ordering::Less,
+            }
+        });
+
+        let mut active_indices: HashSet<usize> = HashSet::new();
+        for (_x, is_end, idx) in x_coordinates {
+            if is_end {
+                active_indices.remove(&idx);
+                continue;
+            }
+
+            for other_idx in &active_indices {
                 if let Some(direction) =
-                    intersects::intersection_direction(&object1_corners, &object2_corners)
+                    intersects::intersection_direction(&corners[idx], &corners[*other_idx])
                 {
                     if direction.length() > 0.0001 {
-                        result.push((i, j, direction));
+                        result.push((idx, *other_idx, direction));
                     }
                 }
             }
+            active_indices.insert(idx);
         }
         result
     }
@@ -323,7 +345,7 @@ fn main() {
     };
     let mut rng = thread_rng();
 
-    let num_boxes = 25;
+    let num_boxes = 50;
     while simulation.objects.len() < 4 + num_boxes {
         let position = dvec2(
             rng.gen_range(0.0..width as f64),
