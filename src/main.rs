@@ -13,6 +13,7 @@ use piston_window::*;
 use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::f64::consts::TAU;
 
 #[derive(Copy, Clone)]
 struct RectangleShape {
@@ -137,10 +138,13 @@ impl Simulation {
             .iter()
             .filter(|object| !object.fixed)
             .map(|object| {
+                let height = 768.0 - object.position.y;
+                let gravity = 500.0;
+                let potential_energy = height * gravity / object.inv_mass;
                 let linear_energy = 0.5 * object.velocity.length_squared() / object.inv_mass;
                 let angular_energy = 0.5 * object.angular_velocity * object.angular_velocity
                     / object.inv_moment_of_inertia;
-                linear_energy + angular_energy
+                potential_energy + linear_energy + angular_energy
             })
             .sum()
     }
@@ -156,7 +160,7 @@ impl Simulation {
 
     fn update(&mut self, args: &UpdateArgs) {
         let dt = args.dt;
-        let num_steps = 16;
+        let num_steps = 32;
         for _ in 0..num_steps {
             self.step(dt / num_steps as f64);
         }
@@ -165,11 +169,12 @@ impl Simulation {
     fn colliding_objects(&self) -> Vec<(usize, usize, DVec2)> {
         let mut result = Vec::new();
 
-        let bounding_boxes = self.objects.iter().map(RigidBody::bounding_box);
+        let bounding_boxes: Vec<BoundingBox> =
+            self.objects.iter().map(RigidBody::bounding_box).collect();
         let corners: Vec<ConvexPolygon> = self.objects.iter().map(RigidBody::corners).collect();
 
         let mut x_coordinates: Vec<(f64, bool, usize)> = bounding_boxes
-            .into_iter()
+            .iter()
             .enumerate()
             .flat_map(|(idx, bounding_box)| {
                 let start_x = bounding_box.min.x;
@@ -194,6 +199,9 @@ impl Simulation {
             }
 
             for other_idx in &active_indices {
+                if !bounding_boxes[idx].intersects(&bounding_boxes[*other_idx]) {
+                    continue;
+                }
                 if let Some(direction) =
                     intersects::intersection_direction(&corners[idx], &corners[*other_idx])
                 {
@@ -247,7 +255,6 @@ impl Simulation {
                 + angular_contribution2;
 
             let impulse = num / denom;
-            let impulse = if impulse.is_nan() { 0.0 } else { impulse };
             if !self.objects[i].fixed {
                 self.objects[i].velocity -= impulse * inv_mass1 * n;
                 self.objects[i].angular_velocity -=
@@ -345,13 +352,13 @@ fn main() {
     };
     let mut rng = thread_rng();
 
-    let num_boxes = 50;
-    while simulation.objects.len() < 4 + num_boxes {
+    let num_boxes = 1000;
+    let mut num_failures = 0;
+    while simulation.objects.len() < 4 + num_boxes && num_failures < 100 {
         let position = dvec2(
             rng.gen_range(0.0..width as f64),
             rng.gen_range(0.0..height as f64),
         );
-        let angle = rng.gen_range(0.0..360.0);
 
         let colour: [f32; 4] = [
             rng.gen_range(0.5..0.9),
@@ -359,8 +366,9 @@ fn main() {
             rng.gen_range(0.5..0.9),
             1.0,
         ];
-        let width = rng.gen_range(50.0..100.0);
-        let height = rng.gen_range(50.0..100.0);
+        let width: f64 = rng.gen_range(50.0..100.0);
+        let height: f64 = rng.gen_range(50.0..100.0);
+        let angle = rng.gen_range(0.0..TAU);
         let shape = RectangleShape::new(width, height, 1.0, colour);
         let rectangle = RigidBody::new(shape, position, angle, false);
 
@@ -371,6 +379,9 @@ fn main() {
         let completely_contained = window_bounding_box.contains(&rectangle.bounding_box());
         if completely_contained && !intersects_existing {
             simulation.objects.push(rectangle);
+            num_failures = 0;
+        } else {
+            num_failures += 1;
         }
     }
 

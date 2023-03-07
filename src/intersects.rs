@@ -146,9 +146,5 @@ pub fn contact_point(poly1: &ConvexPolygon, poly2: &ConvexPolygon) -> DVec2 {
             (closest_point, closest_distance) = (*pt, distance);
         }
     }
-
-    if closest_distance > 1.0 {
-        println!("Closest distance: {closest_distance}");
-    }
     closest_point
 }
