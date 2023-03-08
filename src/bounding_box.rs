@@ -6,6 +6,21 @@ pub struct BoundingBox {
 }
 
 impl BoundingBox {
+    pub fn new() -> Self {
+        let infinity = dvec2(f64::INFINITY, f64::INFINITY);
+        BoundingBox {
+            min: infinity,
+            max: -infinity,
+        }
+    }
+
+    pub fn add_point(&self, point: DVec2) -> Self {
+        BoundingBox {
+            min: self.min.min(point),
+            max: self.max.max(point),
+        }
+    }
+
     pub fn intersects(&self, other: &Self) -> bool {
         let intersection_min = self.min.max(other.min);
         let intersection_max = self.max.min(other.max);

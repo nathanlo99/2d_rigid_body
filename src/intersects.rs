@@ -1,13 +1,16 @@
+use super::bounding_box::BoundingBox;
 use glam::*;
-pub trait Support {
+
+pub trait Intersectable {
     fn support_point(&self, direction: DVec2) -> DVec2;
+    fn bounding_box(&self) -> BoundingBox;
 }
 
 pub struct ConvexPolygon {
     pub vertices: Vec<DVec2>,
 }
 
-impl Support for ConvexPolygon {
+impl Intersectable for ConvexPolygon {
     fn support_point(&self, direction: DVec2) -> DVec2 {
         let mut best_vertex = self.vertices[0];
         let mut best_dot_product = best_vertex.dot(direction);
@@ -19,6 +22,12 @@ impl Support for ConvexPolygon {
             }
         }
         best_vertex
+    }
+
+    fn bounding_box(&self) -> BoundingBox {
+        self.vertices
+            .iter()
+            .fold(BoundingBox::new(), |acc, point| acc.add_point(*point))
     }
 }
 
@@ -47,7 +56,7 @@ fn nearest_triangle(triangle: (DVec2, DVec2, DVec2)) -> Option<(DVec2, DVec2, DV
     None
 }
 
-pub fn intersects<T1: Support, T2: Support>(
+pub fn intersects<T1: Intersectable, T2: Intersectable>(
     poly1: &T1,
     poly2: &T2,
 ) -> Option<(DVec2, DVec2, DVec2)> {
@@ -73,7 +82,10 @@ pub fn intersects<T1: Support, T2: Support>(
     Some(triangle)
 }
 
-pub fn intersection_direction<T1: Support, T2: Support>(poly1: &T1, poly2: &T2) -> Option<DVec2> {
+pub fn intersection_direction<T1: Intersectable, T2: Intersectable>(
+    poly1: &T1,
+    poly2: &T2,
+) -> Option<DVec2> {
     let (p1, p2, p3) = intersects(poly1, poly2)?;
     // The triangle (a, b, c) contains the origin
 

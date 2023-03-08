@@ -1,120 +1,19 @@
-extern crate find_folder;
-extern crate opengl_graphics;
-extern crate piston_window;
-
 mod bounding_box;
 mod intersects;
+mod rigid_body;
 
 use bounding_box::BoundingBox;
+use intersects::{ConvexPolygon, *};
+use rigid_body::*;
+
 use glam::*;
-use intersects::ConvexPolygon;
 use opengl_graphics::{GlGraphics, GlyphCache, OpenGL};
 use piston_window::*;
 use rand::{thread_rng, Rng};
+
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::f64::consts::TAU;
-
-#[derive(Copy, Clone)]
-struct RectangleShape {
-    width: f64,
-    height: f64,
-    density: f64,
-
-    colour: [f32; 4],
-}
-
-impl RectangleShape {
-    fn new(width: f64, height: f64, density: f64, colour: [f32; 4]) -> RectangleShape {
-        RectangleShape {
-            width,
-            height,
-            density,
-            colour,
-        }
-    }
-
-    fn corners(&self) -> [DVec2; 4] {
-        [
-            dvec2(-self.width / 2.0, -self.height / 2.0),
-            dvec2(self.width / 2.0, -self.height / 2.0),
-            dvec2(self.width / 2.0, self.height / 2.0),
-            dvec2(-self.width / 2.0, self.height / 2.0),
-        ]
-    }
-}
-
-struct RigidBody {
-    inv_mass: f64,
-    inv_moment_of_inertia: f64,
-
-    position: DVec2,
-    velocity: DVec2,
-    force: DVec2,
-
-    angle: f64,
-    angular_velocity: f64,
-    torque: f64,
-
-    shape: RectangleShape,
-    fixed: bool,
-}
-
-impl RigidBody {
-    fn new(shape: RectangleShape, position: DVec2, angle: f64, fixed: bool) -> RigidBody {
-        let mass = shape.width * shape.height * shape.density;
-        let moment_of_inertia =
-            mass * (shape.width * shape.width + shape.height * shape.height) / 12.0;
-        RigidBody {
-            inv_mass: if fixed { 0.0 } else { 1.0 / mass },
-            inv_moment_of_inertia: 1.0 / moment_of_inertia,
-            position,
-            velocity: DVec2::ZERO,
-            force: DVec2::ZERO,
-            angle,
-            angular_velocity: 0.0,
-            torque: 0.0,
-            shape,
-            fixed,
-        }
-    }
-
-    fn center(&self) -> DVec2 {
-        self.position
-    }
-
-    fn corners(&self) -> ConvexPolygon {
-        let rotate_vector = dvec2(self.angle.cos(), self.angle.sin());
-        let vertices = self
-            .shape
-            .corners()
-            .map(|corner| self.position + corner.rotate(rotate_vector))
-            .to_vec();
-        ConvexPolygon { vertices }
-    }
-
-    fn bounding_box(&self) -> bounding_box::BoundingBox {
-        let corners = self.corners().vertices;
-        // TODO: Figure out how to do this with .iter().reduce()
-        let mut min = corners[0];
-        let mut max = corners[0];
-        for transformed_corner in &corners[1..] {
-            min = min.min(*transformed_corner);
-            max = max.max(*transformed_corner);
-        }
-        bounding_box::BoundingBox { min, max }
-    }
-
-    fn intersects(&self, other: &Self) -> bool {
-        self.bounding_box().intersects(&other.bounding_box())
-            && intersects::intersects(&self.corners(), &other.corners()).is_some()
-    }
-
-    fn clear_forces(&mut self) {
-        self.force = DVec2::ZERO;
-        self.torque = 0.0;
-    }
-}
 
 struct Simulation {
     objects: Vec<RigidBody>,
@@ -124,7 +23,7 @@ struct Simulation {
 
 impl Simulation {
     fn new(width: f64, height: f64, gl: GlGraphics) -> Self {
-        let shape = RectangleShape::new(width, height, 1000000.0, [0.5, 0.5, 0.5, 1.0]);
+        let shape = RectangleShape::new(width, height, f64::INFINITY, [0.5, 0.5, 0.5, 1.0]);
         let top = RigidBody::new(shape, dvec2(width / 2.0, -height / 2.0), 0.0, true);
         let bottom = RigidBody::new(shape, dvec2(width / 2.0, height * 1.5), 0.0, true);
         let left = RigidBody::new(shape, dvec2(-width / 2.0, height / 2.0), 0.0, true);
@@ -140,10 +39,11 @@ impl Simulation {
             .map(|object| {
                 let height = 768.0 - object.position.y;
                 let gravity = 500.0;
-                let potential_energy = height * gravity / object.inv_mass;
-                let linear_energy = 0.5 * object.velocity.length_squared() / object.inv_mass;
+                let potential_energy = height * gravity / object.shape.inv_mass();
+                let linear_energy =
+                    0.5 * object.velocity.length_squared() / object.shape.inv_mass();
                 let angular_energy = 0.5 * object.angular_velocity * object.angular_velocity
-                    / object.inv_moment_of_inertia;
+                    / object.shape.inv_moment_of_inertia();
                 potential_energy + linear_energy + angular_energy
             })
             .sum()
@@ -153,14 +53,14 @@ impl Simulation {
         self.objects.iter_mut().for_each(RigidBody::clear_forces);
 
         // Apply gravity
-        self.objects.iter_mut().for_each(|object| {
-            object.force += 500.0 / object.inv_mass * DVec2::Y;
-        });
+        self.objects
+            .iter_mut()
+            .for_each(|object| object.force += 500.0 / object.shape.inv_mass() * DVec2::Y);
     }
 
     fn update(&mut self, args: &UpdateArgs) {
         let dt = args.dt;
-        let num_steps = 32;
+        let num_steps = 16;
         for _ in 0..num_steps {
             self.step(dt / num_steps as f64);
         }
@@ -169,9 +69,9 @@ impl Simulation {
     fn colliding_objects(&self) -> Vec<(usize, usize, DVec2)> {
         let mut result = Vec::new();
 
-        let bounding_boxes: Vec<BoundingBox> =
-            self.objects.iter().map(RigidBody::bounding_box).collect();
         let corners: Vec<ConvexPolygon> = self.objects.iter().map(RigidBody::corners).collect();
+        let bounding_boxes: Vec<BoundingBox> =
+            corners.iter().map(Intersectable::bounding_box).collect();
 
         let mut x_coordinates: Vec<(f64, bool, usize)> = bounding_boxes
             .iter()
@@ -220,14 +120,15 @@ impl Simulation {
             let object1 = &self.objects[i];
             let object2 = &self.objects[j];
 
-            let inv_mass1 = object1.inv_mass;
-            let inv_mass2 = object2.inv_mass;
+            let inv_mass1 = object1.shape.inv_mass();
+            let inv_mass2 = object2.shape.inv_mass();
             let velocity1 = self.objects[i].velocity;
             let velocity2 = self.objects[j].velocity;
-            let inv_moment_of_inertia1 = object1.inv_moment_of_inertia;
-            let inv_moment_of_inertia2 = object2.inv_moment_of_inertia;
+            let inv_moment_of_inertia1 = object1.shape.inv_moment_of_inertia();
+            let inv_moment_of_inertia2 = object2.shape.inv_moment_of_inertia();
 
-            let object1_move_factor = 1.0 / (1.0 + object2.inv_mass / object1.inv_mass);
+            let object1_move_factor =
+                1.0 / (1.0 + object2.shape.inv_mass() / object1.shape.inv_mass());
             let object2_move_factor = 1.0 - object1_move_factor;
 
             self.objects[i].position -= direction * object1_move_factor;
@@ -258,13 +159,13 @@ impl Simulation {
             if !self.objects[i].fixed {
                 self.objects[i].velocity -= impulse * inv_mass1 * n;
                 self.objects[i].angular_velocity -=
-                    rap_perp.dot(n) * impulse * self.objects[i].inv_moment_of_inertia;
+                    rap_perp.dot(n) * impulse * self.objects[i].shape.inv_moment_of_inertia();
             }
 
             if !self.objects[j].fixed {
                 self.objects[j].velocity += impulse * inv_mass2 * n;
                 self.objects[j].angular_velocity +=
-                    rbp_perp.dot(n) * impulse * self.objects[j].inv_moment_of_inertia;
+                    rbp_perp.dot(n) * impulse * self.objects[j].shape.inv_moment_of_inertia();
             }
         }
     }
@@ -277,10 +178,10 @@ impl Simulation {
                 continue;
             }
 
-            object.velocity += object.force * object.inv_mass * dt;
+            object.velocity += object.force * object.shape.inv_mass() * dt;
             object.position += object.velocity * dt;
 
-            object.angular_velocity += object.torque * object.inv_moment_of_inertia * dt;
+            object.angular_velocity += object.torque * object.shape.inv_moment_of_inertia() * dt;
             object.angle += object.angular_velocity * dt;
         }
         self.resolve_collisions();
@@ -376,7 +277,8 @@ fn main() {
             .objects
             .iter()
             .any(|object| rectangle.intersects(object));
-        let completely_contained = window_bounding_box.contains(&rectangle.bounding_box());
+        let completely_contained =
+            window_bounding_box.contains(&rectangle.corners().bounding_box());
         if completely_contained && !intersects_existing {
             simulation.objects.push(rectangle);
             num_failures = 0;
